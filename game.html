@@ -1,0 +1,3759 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Echoes of Asterra</title>
+<style>
+*{box-sizing:border-box}
+html,body{
+margin:0;
+width:100%;
+height:100%;
+overflow:hidden;
+background:#080b12;
+color:#eee;
+font-family:system-ui,-apple-system,Segoe UI,sans-serif
+}
+body{
+display:grid;
+place-items:center
+}
+#wrap{
+position:relative;
+width:min(100vw,1280px);
+height:min(100vh,720px);
+background:#111;
+overflow:hidden;
+border:1px solid #263044;
+box-shadow:0 20px 70px #000
+}
+canvas{
+display:block;
+width:100%;
+height:100%;
+image-rendering:auto
+}
+#touch{
+display:none;
+position:absolute;
+inset:0;
+pointer-events:none
+}
+button{
+font:inherit;
+color:#eef;
+border:1px solid #607096;
+background:#182239;
+padding:12px 20px;
+border-radius:8px;
+cursor:pointer
+}
+button:hover{
+background:#243352
+}
+#debug{
+position:absolute;
+left:10px;
+bottom:8px;
+font-size:11px;
+color:#8fa2c8;
+pointer-events:none;
+display:none
+}
+</style>
+</head>
+
+<body>
+
+<div id="wrap">
+<canvas id="game" width="1280" height="720"></canvas>
+<div id="debug"></div>
+</div>
+
+<script>
+'use strict';
+
+/*
+ECHOES OF ASTERRA
+Single file Action Adventure
+Keine externen Abhängigkeiten
+*/
+
+const C=document.getElementById('game');
+const X=C.getContext('2d');
+
+const W=C.width;
+const H=C.height;
+
+const TAU=Math.PI*2;
+const TILE=40;
+const WORLD_W=52;
+const WORLD_H=36;
+
+const keys=new Set();
+const pressed=new Set();
+
+addEventListener('keydown',e=>{
+    if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' ','Tab'].includes(e.key)){
+        e.preventDefault();
+    }
+
+    if(!keys.has(e.key.toLowerCase())){
+        pressed.add(e.key.toLowerCase());
+    }
+
+    keys.add(e.key.toLowerCase());
+    unlockAudio();
+});
+
+addEventListener('keyup',e=>{
+    keys.delete(e.key.toLowerCase());
+});
+
+C.addEventListener('mousedown',unlockAudio);
+C.addEventListener('touchstart',unlockAudio,{passive:true});
+
+function down(k){
+    return keys.has(k)||keys.has(k.toLowerCase());
+}
+
+function hit(k){
+    return pressed.has(k);
+}
+
+function clamp(v,a,b){
+    return Math.max(a,Math.min(b,v));
+}
+
+function lerp(a,b,t){
+    return a+(b-a)*t;
+}
+
+function dist(a,b){
+    return Math.hypot(a.x-b.x,a.y-b.y);
+}
+
+function rects(a,b){
+    return a.x<b.x+b.w &&
+           a.x+a.w>b.x &&
+           a.y<b.y+b.h &&
+           a.y+a.h>b.y;
+}
+
+let seed=9137;
+
+function rng(n=1){
+    let x=Math.sin(n*999.123+seed)*43758.5453;
+    return x-Math.floor(x);
+}
+
+function rnd(){
+    seed=(seed*1664525+1013904223)>>>0;
+    return seed/4294967296;
+}
+
+
+/* AUDIO */
+
+const AudioSys={
+    ctx:null,
+    master:null,
+    started:false,
+    step:0,
+    timer:0,
+    musicOn:true,
+    volume:.12
+};
+
+function unlockAudio(){
+    if(AudioSys.started)return;
+
+    try{
+        AudioSys.ctx=new (window.AudioContext||window.webkitAudioContext)();
+
+        AudioSys.master=AudioSys.ctx.createGain();
+        AudioSys.master.gain.value=AudioSys.volume;
+
+        AudioSys.master.connect(AudioSys.ctx.destination);
+
+        AudioSys.started=true;
+    }catch(e){}
+}
+
+function tone(freq,dur,type='sine',vol=.08,delay=0){
+
+    if(!AudioSys.started||!AudioSys.musicOn)return;
+
+    const c=AudioSys.ctx;
+    const o=c.createOscillator();
+    const g=c.createGain();
+
+    o.type=type;
+    o.frequency.value=freq;
+
+    g.gain.setValueAtTime(
+        0,
+        c.currentTime+delay
+    );
+
+    g.gain.linearRampToValueAtTime(
+        vol,
+        c.currentTime+delay+.01
+    );
+
+    g.gain.exponentialRampToValueAtTime(
+        .001,
+        c.currentTime+delay+dur
+    );
+
+    o.connect(g);
+    g.connect(AudioSys.master);
+
+    o.start(c.currentTime+delay);
+    o.stop(c.currentTime+delay+dur+.03);
+}
+
+function sfx(n){
+
+    if(!AudioSys.started)return;
+
+    const m={
+        attack:[180,.09,'sawtooth'],
+        hit:[90,.12,'square'],
+        hurt:[70,.22,'square'],
+        item:[660,.12,'sine'],
+        door:[240,.3,'triangle'],
+        chest:[420,.25,'sine'],
+        switch:[310,.15,'square'],
+        boss:[55,.6,'sawtooth'],
+        death:[100,.5,'triangle'],
+        win:[523,.18,'sine']
+    }[n];
+
+    if(m)tone(...m);
+}
+
+function music(dt){
+
+    if(!AudioSys.started||!AudioSys.musicOn)return;
+
+    AudioSys.timer-=dt;
+
+    if(AudioSys.timer<=0){
+
+        const scales=[
+            196,
+            220,
+            261.63,
+            293.66,
+            329.63,
+            392
+        ];
+
+        const f=scales[
+            AudioSys.step++%scales.length
+        ];
+
+        tone(
+            f,
+            .55,
+            'sine',
+            .018
+        );
+
+        if(AudioSys.step%4===0){
+            tone(
+                f/2,
+                .7,
+                'triangle',
+                .012
+            );
+        }
+
+        AudioSys.timer=.62;
+    }
+}
+
+
+/* WORLD */
+
+const world=[];
+
+function buildWorld(){
+
+    for(let y=0;y<WORLD_H;y++){
+
+        world[y]=[];
+
+        for(let x=0;x<WORLD_W;x++){
+            world[y][x]='grass';
+        }
+    }
+
+    for(let x=0;x<WORLD_W;x++){
+        world[0][x]='wall';
+        world[WORLD_H-1][x]='wall';
+    }
+
+    for(let y=0;y<WORLD_H;y++){
+        world[y][0]='wall';
+        world[y][WORLD_W-1]='wall';
+    }
+
+    /* FOREST */
+
+    for(let y=1;y<16;y++)
+        for(let x=1;x<18;x++)
+            world[y][x]='forest';
+
+    /* VILLAGE */
+
+    for(let y=1;y<14;y++)
+        for(let x=19;x<35;x++)
+            world[y][x]='village';
+
+    /* MOUNTAINS */
+
+    for(let y=1;y<18;y++)
+        for(let x=36;x<51;x++)
+            world[y][x]='mountain';
+
+    /* LAKE */
+
+    for(let y=19;y<35;y++)
+        for(let x=1;x<20;x++)
+            world[y][x]='lake';
+
+    /* RUINS */
+
+    for(let y=19;y<35;y++)
+        for(let x=21;x<35;x++)
+            world[y][x]='ruins';
+
+    /* CAVES */
+
+    for(let y=19;y<35;y++)
+        for(let x=36;x<51;x++)
+            world[y][x]='cave';
+
+    /* ROADS */
+
+    for(let x=3;x<49;x++)
+        world[12][x]='path';
+
+    for(let y=3;y<33;y++)
+        world[y][28]='path';
+
+    for(let x=8;x<46;x++)
+        world[24][x]='path';
+
+    /* DUNGEON */
+
+    for(let y=25;y<33;y++)
+        for(let x=23;x<33;x++)
+            world[y][x]='dungeon';
+
+    /* BOSS ARENA */
+
+    for(let y=21;y<29;y++)
+        for(let x=39;x<48;x++)
+            world[y][x]='arena';
+
+    /* WATER PATCHES */
+
+    for(let y=21;y<34;y++)
+        for(let x=2;x<19;x++){
+
+            if(
+                (x+y)%4!==0 &&
+                x>3 &&
+                y>20
+            ){
+                world[y][x]='water';
+            }
+        }
+}
+
+buildWorld();
+
+const solids=new Set([
+    'wall',
+    'mountain',
+    'water',
+    'tree',
+    'rock',
+    'house',
+    'pillar',
+    'dungeonWall'
+]);
+
+function tileAt(px,py){
+
+    const x=Math.floor(px/TILE);
+    const y=Math.floor(py/TILE);
+
+    if(
+        x<0||
+        y<0||
+        x>=WORLD_W||
+        y>=WORLD_H
+    ){
+        return'wall';
+    }
+
+    return world[y][x];
+}
+
+function solidAt(px,py){
+    return solids.has(
+        tileAt(px,py)
+    );
+}
+
+function blocked(x,y,w,h){
+
+    const pts=[
+        [x+3,y+3],
+        [x+w-3,y+3],
+        [x+3,y+h-3],
+        [x+w-3,y+h-3]
+    ];
+
+    return pts.some(p=>
+        solidAt(p[0],p[1])
+    );
+}
+
+
+/* GAME STATE */
+
+const state={
+    mode:'title',
+    time:0,
+    playTime:0,
+    shake:0,
+    flash:0,
+    dialog:null,
+    quest:null,
+    story:0,
+
+    bosses:{
+        thorn:false,
+        warden:false,
+        void:false
+    },
+
+    chests:{},
+    switches:{},
+    enemiesDead:{},
+
+    doorOpen:false,
+    won:false
+};
+
+const player={
+    x:24*TILE,
+    y:11*TILE,
+
+    w:24,
+    h:28,
+
+    hp:8,
+    maxHp:8,
+
+    stamina:100,
+
+    atk:0,
+    roll:0,
+    invuln:0,
+
+    dir:{
+        x:0,
+        y:1
+    },
+
+    speed:155,
+    damage:2,
+
+    coins:0,
+    keys:0,
+    potions:2,
+
+    weapon:0,
+    shield:false,
+
+    anim:0
+};
+
+const camera={
+    x:0,
+    y:0
+};
+
+const enemies=[];
+const npcs=[];
+const items=[];
+const particles=[];
+const numbers=[];
+const projectiles=[];
+const traps=[];
+
+const chests=[
+    {
+        x:17*TILE,
+        y:13*TILE,
+        id:'forestChest',
+        item:'key'
+    },
+    {
+        x:32*TILE,
+        y:8*TILE,
+        id:'villageChest',
+        item:'potion'
+    },
+    {
+        x:25*TILE,
+        y:29*TILE,
+        id:'dungeonChest',
+        item:'shield'
+    },
+    {
+        x:43*TILE,
+        y:30*TILE,
+        id:'caveChest',
+        item:'key'
+    }
+];
+
+const switches=[
+    {
+        x:29*TILE,
+        y:27*TILE,
+        id:'s1',
+        on:false
+    },
+    {
+        x:42*TILE,
+        y:23*TILE,
+        id:'s2',
+        on:false
+    },
+    {
+        x:9*TILE,
+        y:25*TILE,
+        id:'s3',
+        on:false
+    }
+];
+
+
+/* ENTITY CREATION */
+
+function addEnemy(type,x,y,id){
+
+    enemies.push({
+        type,
+        x,
+        y,
+        id,
+
+        hp:
+            type==='boss'?24:
+            type==='brute'?7:
+            type==='archer'?3:
+            type==='runner'?2:
+            4,
+
+        max:
+            type==='boss'?24:
+            type==='brute'?7:
+            type==='archer'?3:
+            type==='runner'?2:
+            4,
+
+        r:14,
+
+        cd:rnd()*2,
+        hit:0,
+        dead:false,
+        phase:0,
+        flash:0
+    });
+}
+
+function addNPC(name,x,y,role){
+
+    npcs.push({
+        name,
+        x,
+        y,
+        role,
+        phase:0
+    });
+}
+
+function initEntities(){
+
+    enemies.length=0;
+    npcs.length=0;
+    items.length=0;
+    projectiles.length=0;
+    particles.length=0;
+    numbers.length=0;
+    traps.length=0;
+
+    addNPC(
+        'Mira',
+        25*TILE,
+        9*TILE,
+        'elder'
+    );
+
+    addNPC(
+        'Tolan',
+        31*TILE,
+        11*TILE,
+        'smith'
+    );
+
+    addNPC(
+        'Pip',
+        22*TILE,
+        10*TILE,
+        'child'
+    );
+
+    addNPC(
+        'Sera',
+        9*TILE,
+        8*TILE,
+        'ranger'
+    );
+
+    addEnemy(
+        'melee',
+        8*TILE,
+        6*TILE,
+        'e1'
+    );
+
+    addEnemy(
+        'runner',
+        13*TILE,
+        10*TILE,
+        'e2'
+    );
+
+    addEnemy(
+        'melee',
+        15*TILE,
+        5*TILE,
+        'e3'
+    );
+
+    addEnemy(
+        'archer',
+        42*TILE,
+        7*TILE,
+        'e4'
+    );
+
+    addEnemy(
+        'brute',
+        45*TILE,
+        10*TILE,
+        'e5'
+    );
+
+    addEnemy(
+        'runner',
+        6*TILE,
+        29*TILE,
+        'e6'
+    );
+
+    addEnemy(
+        'archer',
+        16*TILE,
+        30*TILE,
+        'e7'
+    );
+
+    addEnemy(
+        'melee',
+        24*TILE,
+        28*TILE,
+        'd1'
+    );
+
+    addEnemy(
+        'melee',
+        30*TILE,
+        30*TILE,
+        'd2'
+    );
+
+    addEnemy(
+        'brute',
+        27*TILE,
+        26*TILE,
+        'd3'
+    );
+
+    if(!state.bosses.thorn){
+        addEnemy(
+            'boss',
+            10*TILE,
+            13*TILE,
+            'thorn'
+        );
+    }
+
+    if(!state.bosses.warden){
+        addEnemy(
+            'boss',
+            28*TILE,
+            31*TILE,
+            'warden'
+        );
+    }
+
+    if(!state.bosses.void){
+        addEnemy(
+            'boss',
+            44*TILE,
+            25*TILE,
+            'void'
+        );
+    }
+
+    items.push({
+        x:27*TILE,
+        y:10*TILE,
+        type:'potion',
+        taken:false
+    });
+
+    items.push({
+        x:13*TILE,
+        y:13*TILE,
+        type:'key',
+        taken:false
+    });
+
+    items.push({
+        x:33*TILE,
+        y:12*TILE,
+        type:'shield',
+        taken:false
+    });
+}
+
+initEntities();
+
+
+/* SAVE */
+
+function resetGame(){
+
+    seed=9137;
+
+    state.mode='play';
+    state.time=0;
+    state.playTime=0;
+    state.shake=0;
+    state.flash=0;
+    state.dialog=null;
+
+    state.quest={
+        id:'light',
+        status:'active',
+        progress:0
+    };
+
+    state.story=0;
+
+    state.bosses={
+        thorn:false,
+        warden:false,
+        void:false
+    };
+
+    state.chests={};
+    state.switches={};
+
+    state.doorOpen=false;
+    state.won=false;
+
+    Object.assign(
+        player,
+        {
+            x:24*TILE,
+            y:11*TILE,
+            hp:8,
+            maxHp:8,
+            stamina:100,
+            atk:0,
+            roll:0,
+            invuln:0,
+            coins:0,
+            keys:0,
+            potions:2,
+            weapon:0,
+            shield:false
+        }
+    );
+
+    initEntities();
+
+    saveGame();
+}
+
+function saveGame(){
+
+    try{
+
+        localStorage.setItem(
+            'asterra_save',
+            JSON.stringify({
+
+                state:{
+                    ...state,
+                    dialog:null
+                },
+
+                player:{
+                    ...player
+                },
+
+                enemies:
+                    enemies.map(e=>({
+                        id:e.id,
+                        dead:e.dead,
+                        hp:e.hp,
+                        x:e.x,
+                        y:e.y
+                    })),
+
+                items:
+                    items.map(i=>({
+                        x:i.x,
+                        y:i.y,
+                        type:i.type,
+                        taken:i.taken
+                    }))
+            })
+        );
+
+    }catch(e){}
+}
+
+function loadGame(){
+
+    try{
+
+        const d=
+            JSON.parse(
+                localStorage.getItem(
+                    'asterra_save'
+                )
+            );
+
+        if(!d)return false;
+
+        Object.assign(
+            state,
+            d.state
+        );
+
+        Object.assign(
+            player,
+            d.player
+        );
+
+        initEntities();
+
+        for(const z of d.enemies||[]){
+
+            const e=
+                enemies.find(
+                    q=>q.id===z.id
+                );
+
+            if(e){
+                Object.assign(e,z);
+            }
+        }
+
+        for(const z of d.items||[]){
+
+            const i=
+                items.find(q=>
+                    q.x===z.x &&
+                    q.y===z.y &&
+                    q.type===z.type
+                );
+
+            if(i){
+                i.taken=z.taken;
+            }
+        }
+
+        state.mode='play';
+
+        return true;
+
+    }catch(e){
+
+        return false;
+    }
+}
+
+function hasSave(){
+
+    try{
+        return !!localStorage.getItem(
+            'asterra_save'
+        );
+    }catch(e){
+        return false;
+    }
+}
+
+
+/* PARTICLES */
+
+function particle(
+    x,
+    y,
+    color,
+    size=3,
+    life=.5,
+    vx=0,
+    vy=0
+){
+
+    particles.push({
+        x,
+        y,
+        color,
+        size,
+        life,
+        max:life,
+        vx,
+        vy
+    });
+}
+
+function burst(
+    x,
+    y,
+    color,
+    n=8
+){
+
+    for(let i=0;i<n;i++){
+
+        let a=rnd()*TAU;
+        let s=30+rnd()*100;
+
+        particle(
+            x,
+            y,
+            color,
+            2+rnd()*3,
+            .25+rnd()*.45,
+            Math.cos(a)*s,
+            Math.sin(a)*s
+        );
+    }
+}
+
+function dmgNumber(x,y,v){
+
+    numbers.push({
+        x,
+        y,
+        v,
+        life:.8
+    });
+}
+
+
+/* COMBAT */
+
+function hurtPlayer(d){
+
+    if(
+        player.invuln>0 ||
+        state.mode!=='play'
+    ){
+        return;
+    }
+
+    let finalDamage=d;
+
+    if(player.shield){
+        finalDamage=Math.max(
+            1,
+            d-1
+        );
+    }
+
+    player.hp-=finalDamage;
+    player.invuln=.65;
+
+    state.flash=.15;
+    state.shake=8;
+
+    sfx('hurt');
+
+    dmgNumber(
+        player.x,
+        player.y-18,
+        '-'+finalDamage
+    );
+
+    if(player.hp<=0){
+
+        player.hp=0;
+        state.mode='gameover';
+
+        sfx('death');
+    }
+}
+
+function enemyHurt(e,d){
+
+    if(
+        e.dead ||
+        e.hit>0
+    ){
+        return;
+    }
+
+    e.hp-=d;
+    e.hit=.18;
+    e.flash=.12;
+
+    state.shake=5;
+
+    dmgNumber(
+        e.x,
+        e.y-18,
+        '-'+d
+    );
+
+    burst(
+        e.x,
+        e.y,
+        '#ffd166',
+        5
+    );
+
+    sfx('hit');
+
+    if(e.hp<=0){
+
+        e.dead=true;
+
+        burst(
+            e.x,
+            e.y,
+            '#9be7ff',
+            14
+        );
+
+        player.coins+=
+            e.type==='boss'
+            ?20
+            :1;
+
+        if(e.type==='boss'){
+
+            if(e.id==='thorn')
+                state.bosses.thorn=true;
+
+            if(e.id==='warden')
+                state.bosses.warden=true;
+
+            if(e.id==='void')
+                state.bosses.void=true;
+
+            sfx('boss');
+        }
+
+        saveGame();
+    }
+}
+
+function attack(){
+
+    if(
+        player.atk>0 ||
+        player.roll>0
+    ){
+        return;
+    }
+
+    player.atk=.28;
+
+    sfx('attack');
+
+    const ax=
+        player.x+
+        player.dir.x*27;
+
+    const ay=
+        player.y+
+        player.dir.y*27;
+
+    for(const e of enemies){
+
+        if(e.dead)continue;
+
+        const dx=e.x-ax;
+        const dy=e.y-ay;
+
+        if(
+            Math.hypot(dx,dy)<45 &&
+            dx*player.dir.x+
+            dy*player.dir.y>-5
+        ){
+
+            enemyHurt(
+                e,
+                player.damage
+            );
+        }
+    }
+
+    burst(
+        ax,
+        ay,
+        '#e7f6ff',
+        5
+    );
+}
+
+function roll(){
+
+    if(
+        player.roll>0 ||
+        player.stamina<30
+    ){
+        return;
+    }
+
+    player.stamina-=30;
+    player.roll=.36;
+    player.invuln=.4;
+
+    sfx('attack');
+}
+
+
+/* MOVEMENT */
+
+function movePlayer(dt){
+
+    let x=
+        (down('d')||
+         down('arrowright')?1:0)
+        -
+        (down('a')||
+         down('arrowleft')?1:0);
+
+    let y=
+        (down('s')||
+         down('arrowdown')?1:0)
+        -
+        (down('w')||
+         down('arrowup')?1:0);
+
+    const l=Math.hypot(x,y);
+
+    if(l){
+
+        x/=l;
+        y/=l;
+
+        player.dir={
+            x,
+            y
+        };
+
+        player.anim+=dt*10;
+    }
+
+    let sp=
+        player.speed*
+        (player.roll>0?2.7:1)*
+        (down('shift')?1.3:1);
+
+    let nx=
+        player.x+
+        x*sp*dt;
+
+    let ny=
+        player.y+
+        y*sp*dt;
+
+    if(
+        !blocked(
+            nx-player.w/2,
+            player.y-player.h/2,
+            player.w,
+            player.h
+        )
+    ){
+        player.x=nx;
+    }
+
+    if(
+        !blocked(
+            player.x-player.w/2,
+            ny-player.h/2,
+            player.w,
+            player.h
+        )
+    ){
+        player.y=ny;
+    }
+
+    if(player.roll>0){
+
+        player.roll-=dt;
+
+        const rx=
+            player.x+
+            player.dir.x*
+            sp*2.2*dt;
+
+        const ry=
+            player.y+
+            player.dir.y*
+            sp*2.2*dt;
+
+        if(
+            !blocked(
+                rx-player.w/2,
+                player.y-player.h/2,
+                player.w,
+                player.h
+            )
+        ){
+            player.x=rx;
+        }
+
+        if(
+            !blocked(
+                player.x-player.w/2,
+                ry-player.h/2,
+                player.w,
+                player.h
+            )
+        ){
+            player.y=ry;
+        }
+    }
+}
+
+
+/* INTERACTION */
+
+function interact(){
+
+    for(const c of chests){
+
+        if(
+            !state.chests[c.id] &&
+            Math.hypot(
+                c.x-player.x,
+                c.y-player.y
+            )<42
+        ){
+
+            state.chests[c.id]=true;
+
+            if(c.item==='key'){
+                player.keys++;
+            }
+
+            else if(c.item==='potion'){
+                player.potions++;
+            }
+
+            else if(c.item==='shield'){
+                player.shield=true;
+            }
+
+            sfx('chest');
+
+            burst(
+                c.x,
+                c.y,
+                '#ffd166',
+                12
+            );
+
+            saveGame();
+
+            return;
+        }
+    }
+
+    for(const sw of switches){
+
+        if(
+            Math.hypot(
+                sw.x-player.x,
+                sw.y-player.y
+            )<38
+        ){
+
+            sw.on=!sw.on;
+
+            state.switches[sw.id]=sw.on;
+
+            sfx('switch');
+
+            burst(
+                sw.x,
+                sw.y,
+                sw.on?'#8cff9b':'#777',
+                8
+            );
+
+            if(
+                sw.id==='s1' &&
+                sw.on
+            ){
+                state.doorOpen=true;
+                sfx('door');
+            }
+
+            saveGame();
+
+            return;
+        }
+    }
+
+    const near=
+        npcs.find(n=>
+            Math.hypot(
+                n.x-player.x,
+                n.y-player.y
+            )<55
+        );
+
+    if(near){
+
+        startDialog(near);
+
+        return;
+    }
+
+    for(const i of items){
+
+        if(
+            !i.taken &&
+            Math.hypot(
+                i.x-player.x,
+                i.y-player.y
+            )<35
+        ){
+
+            i.taken=true;
+
+            if(i.type==='potion')
+                player.potions++;
+
+            if(i.type==='key')
+                player.keys++;
+
+            if(i.type==='shield')
+                player.shield=true;
+
+            sfx('item');
+
+            burst(
+                i.x,
+                i.y,
+                '#8ff',
+                10
+            );
+
+            return;
+        }
+    }
+}
+
+
+/* DIALOG */
+
+function startDialog(n){
+
+    state.dialog={
+        npc:n.name,
+        role:n.role,
+        line:0,
+        lines:
+            dialogue[n.role]||
+            dialogue.elder
+    };
+}
+
+const dialogue={
+
+    elder:[
+        'Die Sterne über Asterra werden still. Drei Wächter halten die Echos gefangen.',
+        'Finde sie und bringe das Licht zurück. Beginne im Wald.'
+    ],
+
+    smith:[
+        'Ein guter Schlag braucht Rhythmus. Ich habe ein altes Schild für dich versteckt.',
+        'Wenn du es trägst, überstehst du manchen Treffer.'
+    ],
+
+    child:[
+        'Ich habe im See ein seltsames Leuchten gesehen. Vielleicht führt dort ein Weg in die Ruinen.'
+    ],
+
+    ranger:[
+        'Der Dornwächter im Wald bewacht ein Fragment.',
+        'Besiege ihn und die alten Tore werden sich öffnen.'
+    ]
+};
+
+function advanceDialog(){
+
+    if(!state.dialog)return;
+
+    state.dialog.line++;
+
+    if(
+        state.dialog.line>=
+        state.dialog.lines.length
+    ){
+
+        state.dialog=null;
+
+        if(
+            state.quest &&
+            state.quest.status==='active'
+        ){
+            state.quest.progress=
+                Math.max(
+                    state.quest.progress,
+                    1
+                );
+        }
+
+        saveGame();
+    }
+}
+
+
+/* POTION */
+
+function usePotion(){
+
+    if(
+        player.potions>0 &&
+        player.hp<player.maxHp
+    ){
+
+        player.potions--;
+
+        player.hp=
+            Math.min(
+                player.maxHp,
+                player.hp+3
+            );
+
+        sfx('item');
+
+        burst(
+            player.x,
+            player.y,
+            '#72e6a8',
+            12
+        );
+    }
+}
+
+
+/* ENEMIES */
+
+function updateEnemies(dt){
+
+    for(const e of enemies){
+
+        if(e.dead){
+            continue;
+        }
+
+        e.cd-=dt;
+        e.hit=Math.max(
+            0,
+            e.hit-dt
+        );
+
+        e.flash=Math.max(
+            0,
+            e.flash-dt
+        );
+
+        const dx=
+            player.x-e.x;
+
+        const dy=
+            player.y-e.y;
+
+        const d=
+            Math.hypot(dx,dy);
+
+        const boss=
+            e.type==='boss';
+
+        if(boss){
+
+            e.phase=
+                e.hp<
+                e.max*.5
+                ?1
+                :0;
+
+            if(e.cd<=0){
+
+                e.cd=
+                    e.phase
+                    ?1.1
+                    :1.7;
+
+                bossAttack(e);
+            }
+        }
+
+        if(
+            d<360 &&
+            (!boss||d<430)
+        ){
+
+            let speed=
+                e.type==='runner'
+                ?105
+                :e.type==='brute'
+                ?45
+                :e.type==='boss'
+                ?e.phase?72:48
+                :55;
+
+            if(
+                e.type==='archer' &&
+                d<190
+            ){
+                dx=-dx;
+                dy=-dy;
+            }
+
+            const l=Math.max(
+                1,
+                d
+            );
+
+            const nx=
+                e.x+
+                dx/l*
+                speed*dt;
+
+            const ny=
+                e.y+
+                dy/l*
+                speed*dt;
+
+            if(
+                !blocked(
+                    nx-12,
+                    e.y-12,
+                    24,
+                    24
+                )
+            ){
+                e.x=nx;
+            }
+
+            if(
+                !blocked(
+                    e.x-12,
+                    ny-12,
+                    24,
+                    24
+                )
+            ){
+                e.y=ny;
+            }
+
+            if(
+                d<30 &&
+                e.cd<=0 &&
+                !boss
+            ){
+
+                e.cd=
+                    e.type==='runner'
+                    ?.8
+                    :1.2;
+
+                hurtPlayer(
+                    e.type==='brute'
+                    ?2
+                    :1
+                );
+            }
+        }
+
+        if(
+            e.type==='archer' &&
+            d<330 &&
+            e.cd<=0
+        ){
+
+            e.cd=1.8;
+
+            const l=Math.max(
+                1,
+                d
+            );
+
+            projectiles.push({
+                x:e.x,
+                y:e.y,
+                vx:dx/l*180,
+                vy:dy/l*180,
+                life:2,
+                damage:1,
+                color:'#ff9b7a'
+            });
+        }
+    }
+}
+
+
+/* BOSSES */
+
+function bossAttack(e){
+
+    if(e.id==='thorn'){
+
+        for(let i=0;i<6;i++){
+
+            const a=
+                i*TAU/6+
+                state.time*.4;
+
+            projectiles.push({
+                x:e.x,
+                y:e.y,
+                vx:Math.cos(a)*120,
+                vy:Math.sin(a)*120,
+                life:2.4,
+                damage:1,
+                color:'#72d572'
+            });
+        }
+
+        burst(
+            e.x,
+            e.y,
+            '#55bb66',
+            16
+        );
+    }
+
+    else if(e.id==='warden'){
+
+        for(let i=0;i<3;i++){
+
+            const a=
+                Math.atan2(
+                    player.y-e.y,
+                    player.x-e.x
+                )+
+                (i-1)*.25;
+
+            projectiles.push({
+                x:e.x,
+                y:e.y,
+                vx:Math.cos(a)*230,
+                vy:Math.sin(a)*230,
+                life:1.7,
+                damage:1,
+                color:'#e7d3a5'
+            });
+        }
+
+        burst(
+            e.x,
+            e.y,
+            '#e7d3a5',
+            10
+        );
+    }
+
+    else{
+
+        const n=
+            e.phase
+            ?12
+            :7;
+
+        for(let i=0;i<n;i++){
+
+            const a=rnd()*TAU;
+
+            projectiles.push({
+                x:e.x,
+                y:e.y,
+                vx:Math.cos(a)*145,
+                vy:Math.sin(a)*145,
+                life:2,
+                damage:1,
+                color:'#a88cff'
+            });
+        }
+
+        burst(
+            e.x,
+            e.y,
+            '#a88cff',
+            12
+        );
+    }
+}
+
+
+/* PROJECTILES */
+
+function updateProjectiles(dt){
+
+    for(
+        let i=projectiles.length-1;
+        i>=0;
+        i--
+    ){
+
+        const p=projectiles[i];
+
+        p.x+=p.vx*dt;
+        p.y+=p.vy*dt;
+        p.life-=dt;
+
+        if(
+            Math.hypot(
+                p.x-player.x,
+                p.y-player.y
+            )<16
+        ){
+
+            hurtPlayer(
+                p.damage
+            );
+
+            p.life=0;
+        }
+
+        if(
+            p.life<=0 ||
+            solidAt(p.x,p.y)
+        ){
+            projectiles.splice(i,1);
+        }
+    }
+}
+
+
+/* MAIN UPDATE */
+
+function update(dt){
+
+    state.time+=dt;
+    state.playTime+=dt;
+
+    music(dt);
+
+    player.invuln=
+        Math.max(
+            0,
+            player.invuln-dt
+        );
+
+    player.atk=
+        Math.max(
+            0,
+            player.atk-dt
+        );
+
+    player.stamina=
+        clamp(
+            player.stamina+
+            35*dt,
+            0,
+            100
+        );
+
+    state.shake=
+        Math.max(
+            0,
+            state.shake-dt*18
+        );
+
+    state.flash=
+        Math.max(
+            0,
+            state.flash-dt
+        );
+
+    if(state.mode!=='play'){
+        return;
+    }
+
+    if(hit('j'))
+        attack();
+
+    if(hit('k'))
+        roll();
+
+    if(hit('e'))
+        interact();
+
+    if(hit('i'))
+        state.mode='inventory';
+
+    if(hit('escape'))
+        state.mode='pause';
+
+    if(hit('h'))
+        usePotion();
+
+    movePlayer(dt);
+
+    updateEnemies(dt);
+
+    updateProjectiles(dt);
+
+    for(
+        let i=particles.length-1;
+        i>=0;
+        i--
+    ){
+
+        const p=particles[i];
+
+        p.x+=p.vx*dt;
+        p.y+=p.vy*dt;
+
+        p.vx*=.96;
+        p.vy*=.96;
+
+        p.life-=dt;
+
+        if(p.life<=0){
+            particles.splice(i,1);
+        }
+    }
+
+    for(
+        let i=numbers.length-1;
+        i>=0;
+        i--
+    ){
+
+        numbers[i].y-=25*dt;
+        numbers[i].life-=dt;
+
+        if(
+            numbers[i].life<=0
+        ){
+            numbers.splice(i,1);
+        }
+    }
+
+    if(
+        state.quest?.status==='active' &&
+        state.bosses.thorn
+    ){
+
+        state.quest.progress=2;
+
+        state.quest.status=
+            state.bosses.warden &&
+            state.bosses.void
+            ?'done'
+            :'active';
+    }
+
+    if(
+        state.bosses.thorn &&
+        state.bosses.warden &&
+        state.bosses.void &&
+        !state.won
+    ){
+
+        state.won=true;
+        state.mode='win';
+
+        sfx('win');
+        saveGame();
+    }
+
+    if(hit('f5'))
+        saveGame();
+
+    camera.x=
+        lerp(
+            camera.x,
+            player.x-W/2,
+            .12
+        );
+
+    camera.y=
+        lerp(
+            camera.y,
+            player.y-H/2,
+            .12
+        );
+
+    camera.x=
+        clamp(
+            camera.x,
+            0,
+            WORLD_W*TILE-W
+        );
+
+    camera.y=
+        clamp(
+            camera.y,
+            0,
+            WORLD_H*TILE-H
+        );
+}
+
+
+/* WORLD DRAWING */
+
+function regionName(t){
+
+    return({
+        forest:'Whispering Forest',
+        village:'Lumen Village',
+        mountain:'Ashen Heights',
+        lake:'Moonwater Lake',
+        ruins:'Sunken Ruins',
+        cave:'Hollow Caves',
+        dungeon:'Echo Dungeon',
+        arena:'Void Arena',
+        path:'Old Road',
+        grass:'Asterra'
+    })[t]||'Asterra';
+}
+
+function tileColor(t){
+
+    return({
+        grass:'#1b3a32',
+        forest:'#17372d',
+        village:'#4a3c35',
+        mountain:'#3b3d48',
+        lake:'#173a55',
+        water:'#15506a',
+        ruins:'#403d38',
+        cave:'#25252d',
+        dungeon:'#29252d',
+        arena:'#31283d',
+        path:'#5a4c38',
+        wall:'#111722'
+    })[t]||'#1b3a32';
+}
+
+function drawWorld(){
+
+    const sx=
+        Math.floor(camera.x/TILE)-1;
+
+    const sy=
+        Math.floor(camera.y/TILE)-1;
+
+    const ex=
+        sx+
+        Math.ceil(W/TILE)+2;
+
+    const ey=
+        sy+
+        Math.ceil(H/TILE)+2;
+
+    for(let y=sy;y<ey;y++){
+
+        for(let x=sx;x<ex;x++){
+
+            if(
+                x<0||
+                y<0||
+                x>=WORLD_W||
+                y>=WORLD_H
+            ){
+                continue;
+            }
+
+            const t=world[y][x];
+
+            const px=
+                x*TILE-camera.x;
+
+            const py=
+                y*TILE-camera.y;
+
+            X.fillStyle=
+                tileColor(t);
+
+            X.fillRect(
+                px,
+                py,
+                TILE+1,
+                TILE+1
+            );
+
+            drawTileDetail(
+                t,
+                px,
+                py,
+                x,
+                y
+            );
+        }
+    }
+}
+
+function drawTileDetail(
+    t,
+    x,
+    y,
+    tx,
+    ty
+){
+
+    const r=
+        rng(
+            tx*97+
+            ty*53
+        );
+
+    if(t==='forest'){
+
+        X.fillStyle='#0f2b24';
+
+        X.beginPath();
+
+        X.arc(
+            x+20,
+            y+17,
+            15,
+            0,
+            TAU
+        );
+
+        X.fill();
+
+        X.fillStyle='#315b38';
+
+        X.fillRect(
+            x+18,
+            y+20,
+            5,
+            15
+        );
+
+        if(r>.6){
+
+            X.fillStyle='#76a85a';
+
+            X.fillRect(
+                x+7,
+                y+31,
+                2,
+                5
+            );
+
+            X.fillRect(
+                x+30,
+                y+28,
+                2,
+                7
+            );
+        }
+    }
+
+    else if(t==='village'){
+
+        X.fillStyle='#6b5545';
+
+        if((tx+ty)%3===0){
+
+            X.fillRect(
+                x+5,
+                y+10,
+                30,
+                23
+            );
+        }
+
+        X.fillStyle='#8b3e35';
+
+        if((tx+ty)%3===0){
+
+            X.beginPath();
+
+            X.moveTo(
+                x+3,
+                y+11
+            );
+
+            X.lineTo(
+                x+20,
+                y+1
+            );
+
+            X.lineTo(
+                x+37,
+                y+11
+            );
+
+            X.fill();
+        }
+    }
+
+    else if(t==='mountain'){
+
+        X.fillStyle='#515363';
+
+        X.beginPath();
+
+        X.moveTo(
+            x,
+            y+34
+        );
+
+        X.lineTo(
+            x+19,
+            y+5
+        );
+
+        X.lineTo(
+            x+40,
+            y+34
+        );
+
+        X.fill();
+
+        X.fillStyle='#aeb2bf';
+
+        X.beginPath();
+
+        X.moveTo(
+            x+19,
+            y+5
+        );
+
+        X.lineTo(
+            x+13,
+            y+15
+        );
+
+        X.lineTo(
+            x+20,
+            y+13
+        );
+
+        X.lineTo(
+            x+27,
+            y+17
+        );
+
+        X.fill();
+    }
+
+    else if(t==='water'){
+
+        X.strokeStyle='#48a8bd';
+        X.lineWidth=2;
+
+        X.beginPath();
+
+        X.moveTo(
+            x+3,
+            y+14
+        );
+
+        X.quadraticCurveTo(
+            x+13,
+            y+8,
+            x+23,
+            y+14
+        );
+
+        X.quadraticCurveTo(
+            x+31,
+            y+20,
+            x+38,
+            y+13
+        );
+
+        X.stroke();
+    }
+
+    else if(
+        t==='ruins'||
+        t==='dungeon'
+    ){
+
+        X.fillStyle='#5a564f';
+
+        if((tx+ty)%3===0){
+
+            X.fillRect(
+                x+8,
+                y+8,
+                9,
+                25
+            );
+        }
+
+        if((tx*7+ty)%4===0){
+
+            X.fillRect(
+                x+27,
+                y+13,
+                7,
+                20
+            );
+        }
+    }
+
+    else if(
+        t==='cave'||
+        t==='arena'
+    ){
+
+        X.fillStyle='#12131a';
+
+        X.fillRect(
+            x+5,
+            y+6,
+            30,
+            28
+        );
+
+        X.strokeStyle='#5b5267';
+
+        X.strokeRect(
+            x+5,
+            y+6,
+            30,
+            28
+        );
+    }
+
+    else if(t==='path'){
+
+        X.fillStyle='#756144';
+
+        for(let i=0;i<4;i++){
+
+            X.fillRect(
+                x+4+i*9,
+                y+10+(i%2)*12,
+                6,
+                4
+            );
+        }
+    }
+
+    else if(t==='wall'){
+
+        X.fillStyle='#202838';
+
+        X.strokeStyle='#313d52';
+
+        X.strokeRect(
+            x,
+            y,
+            TILE,
+            TILE
+        );
+    }
+
+    if(
+        (
+            t==='dungeon'||
+            t==='cave'||
+            t==='arena'
+        ) &&
+        (
+            (tx===28&&ty===24)||
+            (tx===39&&ty===27)||
+            (tx===47&&ty===25)
+        )
+    ){
+
+        X.fillStyle=
+            state.doorOpen
+            ?'#3d7652'
+            :'#9a633e';
+
+        X.fillRect(
+            x+12,
+            y+4,
+            16,
+            32
+        );
+    }
+}
+
+function drawShadow(x,y,r){
+
+    X.fillStyle='rgba(0,0,0,.28)';
+
+    X.beginPath();
+
+    X.ellipse(
+        x,
+        y+13,
+        r,
+        r*.45,
+        0,
+        0,
+        TAU
+    );
+
+    X.fill();
+}
+
+
+/* ENTITIES */
+
+function drawEntities(){
+
+    /* CHESTS */
+
+    for(const c of chests){
+
+        const x=
+            c.x-camera.x;
+
+        const y=
+            c.y-camera.y;
+
+        if(!state.chests[c.id]){
+
+            X.fillStyle='#8a5b32';
+
+            X.fillRect(
+                x-13,
+                y-11,
+                26,
+                22
+            );
+
+            X.fillStyle='#d5a84f';
+
+            X.fillRect(
+                x-13,
+                y-2,
+                26,
+                5
+            );
+
+            X.strokeStyle='#e5c36c';
+
+            X.strokeRect(
+                x-13,
+                y-11,
+                26,
+                22
+            );
+
+        }else{
+
+            X.fillStyle='#49352b';
+
+            X.fillRect(
+                x-13,
+                y-8,
+                26,
+                19
+            );
+        }
+    }
+
+
+    /* SWITCHES */
+
+    for(const sw of switches){
+
+        const x=
+            sw.x-camera.x;
+
+        const y=
+            sw.y-camera.y;
+
+        X.fillStyle=
+            sw.on||
+            state.switches[sw.id]
+            ?'#7dff9b'
+            :'#555b66';
+
+        X.fillRect(
+            x-7,
+            y-7,
+            14,
+            14
+        );
+    }
+
+
+    /* ITEMS */
+
+    for(const i of items){
+
+        if(i.taken)continue;
+
+        const x=
+            i.x-camera.x;
+
+        const y=
+            i.y-camera.y;
+
+        X.save();
+
+        X.translate(
+            x,
+            y
+        );
+
+        X.fillStyle=
+            i.type==='key'
+            ?'#f2cf63'
+            :i.type==='potion'
+            ?'#d65b74'
+            :'#aebbd1';
+
+        X.rotate(
+            state.time*2
+        );
+
+        X.fillRect(
+            -7,
+            -7,
+            14,
+            14
+        );
+
+        X.restore();
+    }
+
+
+    /* NPCS */
+
+    for(const n of npcs){
+
+        const x=
+            n.x-camera.x;
+
+        const y=
+            n.y-camera.y;
+
+        drawShadow(
+            x,
+            y,
+            13
+        );
+
+        X.fillStyle='#e7b56b';
+
+        X.beginPath();
+
+        X.arc(
+            x,
+            y-10,
+            9,
+            0,
+            TAU
+        );
+
+        X.fill();
+
+        X.fillStyle=
+            n.role==='smith'
+            ?'#704e46'
+            :'#315b86';
+
+        X.fillRect(
+            x-10,
+            y,
+            20,
+            22
+        );
+
+        X.fillStyle='#fff';
+
+        X.font='12px system-ui';
+
+        X.textAlign='center';
+
+        X.fillText(
+            n.name,
+            x,
+            y-28
+        );
+    }
+
+
+    /* ENEMIES */
+
+    for(const e of enemies){
+
+        if(e.dead)continue;
+
+        const x=
+            e.x-camera.x;
+
+        const y=
+            e.y-camera.y;
+
+        drawShadow(
+            x,
+            y,
+            e.r
+        );
+
+        let col=
+            e.id==='thorn'
+            ?'#4fa35c'
+            :e.id==='warden'
+            ?'#c7aa76'
+            :e.id==='void'
+            ?'#9d72e8'
+            :e.type==='archer'
+            ?'#d77b5e'
+            :e.type==='brute'
+            ?'#9a5962'
+            :e.type==='runner'
+            ?'#dfb34d'
+            :'#c84e5d';
+
+        X.fillStyle=
+            e.flash>0
+            ?'#fff'
+            :col;
+
+        if(e.type==='boss'){
+
+            X.beginPath();
+
+            X.arc(
+                x,
+                y,
+                22,
+                0,
+                TAU
+            );
+
+            X.fill();
+
+            X.fillStyle='#191521';
+
+            X.fillRect(
+                x-7,
+                y-4,
+                4,
+                4
+            );
+
+            X.fillRect(
+                x+4,
+                y-4,
+                4,
+                4
+            );
+
+        }else{
+
+            X.beginPath();
+
+            X.arc(
+                x,
+                y,
+                13,
+                0,
+                TAU
+            );
+
+            X.fill();
+
+            X.fillStyle='#1b1820';
+
+            X.fillRect(
+                x-5,
+                y-3,
+                3,
+                3
+            );
+
+            X.fillRect(
+                x+3,
+                y-3,
+                3,
+                3
+            );
+        }
+
+        if(e.type==='boss'){
+
+            X.fillStyle='#17131c';
+
+            X.fillRect(
+                x-28,
+                y-35,
+                56,
+                6
+            );
+
+            X.fillStyle='#e55';
+
+            X.fillRect(
+                x-28,
+                y-35,
+                56*e.hp/e.max,
+                6
+            );
+        }
+    }
+
+
+    /* PROJECTILES */
+
+    for(const p of projectiles){
+
+        X.fillStyle=p.color;
+
+        X.beginPath();
+
+        X.arc(
+            p.x-camera.x,
+            p.y-camera.y,
+            5,
+            0,
+            TAU
+        );
+
+        X.fill();
+    }
+
+
+    /* PLAYER */
+
+    const px=
+        player.x-camera.x;
+
+    const py=
+        player.y-camera.y;
+
+    drawShadow(
+        px,
+        py,
+        14
+    );
+
+    X.save();
+
+    X.globalAlpha=
+        player.invuln>0 &&
+        Math.floor(state.time*20)%2===0
+        ?.45
+        :1;
+
+    X.fillStyle='#dcecff';
+
+    X.beginPath();
+
+    X.arc(
+        px,
+        py-10,
+        9,
+        0,
+        TAU
+    );
+
+    X.fill();
+
+    X.fillStyle='#3e76b6';
+
+    X.fillRect(
+        px-11,
+        py,
+        22,
+        22
+    );
+
+    X.fillStyle='#203044';
+
+    X.fillRect(
+        px-6,
+        py-13,
+        3,
+        3
+    );
+
+    X.fillRect(
+        px+3,
+        py-13,
+        3,
+        3
+    );
+
+    if(player.atk>0){
+
+        X.strokeStyle='#eaf7ff';
+        X.lineWidth=5;
+
+        X.beginPath();
+
+        const a=
+            Math.atan2(
+                player.dir.y,
+                player.dir.x
+            );
+
+        X.arc(
+            px+player.dir.x*15,
+            py+player.dir.y*15,
+            23,
+            a-.8,
+            a+.8
+        );
+
+        X.stroke();
+    }
+
+    X.restore();
+}
+
+
+/* EFFECTS */
+
+function drawEffects(){
+
+    for(const p of particles){
+
+        X.globalAlpha=
+            clamp(
+                p.life/p.max,
+                0,
+                1
+            );
+
+        X.fillStyle=p.color;
+
+        X.fillRect(
+            p.x-camera.x,
+            p.y-camera.y,
+            p.size,
+            p.size
+        );
+    }
+
+    X.globalAlpha=1;
+
+    for(const n of numbers){
+
+        X.globalAlpha=
+            clamp(
+                n.life*2,
+                0,
+                1
+            );
+
+        X.fillStyle=
+            n.v[0]==='-'
+            ?'#ffb3a7'
+            :'#fff';
+
+        X.font=
+            'bold 15px system-ui';
+
+        X.textAlign='center';
+
+        X.fillText(
+            n.v,
+            n.x-camera.x,
+            n.y-camera.y
+        );
+    }
+
+    X.globalAlpha=1;
+}
+
+
+/* UI */
+
+function panel(
+    x,
+    y,
+    w,
+    h,
+    a='.88'
+){
+
+    X.fillStyle=
+        `rgba(7,11,19,${a})`;
+
+    X.fillRect(
+        x,
+        y,
+        w,
+        h
+    );
+
+    X.strokeStyle='#4b5e82';
+
+    X.strokeRect(
+        x+.5,
+        y+.5,
+        w-1,
+        h-1
+    );
+}
+
+function text(
+    s,
+    x,
+    y,
+    size=18,
+    color='#eef',
+    align='left'
+){
+
+    X.fillStyle=color;
+
+    X.font=
+        `${size}px system-ui`;
+
+    X.textAlign=align;
+
+    X.fillText(
+        s,
+        x,
+        y
+    );
+}
+
+function wrap(
+    s,
+    x,
+    y,
+    w,
+    line=22
+){
+
+    const words=s.split(' ');
+
+    let cur='';
+    let yy=y;
+
+    for(const word of words){
+
+        const test=
+            cur
+            ?cur+' '+word
+            :word;
+
+        if(
+            X.measureText(test).width>w
+        ){
+
+            text(
+                cur,
+                x,
+                yy,
+                16
+            );
+
+            cur=word;
+            yy+=line;
+
+        }else{
+
+            cur=test;
+        }
+    }
+
+    if(cur){
+        text(
+            cur,
+            x,
+            yy,
+            16
+        );
+    }
+
+    return yy;
+}
+
+function drawHUD(){
+
+    const rt=
+        regionName(
+            tileAt(
+                player.x,
+                player.y
+            )
+        );
+
+    text(
+        rt,
+        W/2,
+        28,
+        13,
+        '#c7d5ec',
+        'center'
+    );
+
+    panel(
+        16,
+        16,
+        260,
+        86
+    );
+
+    text(
+        'ASTERRA',
+        28,
+        39,
+        14,
+        '#90a9d4'
+    );
+
+    text(
+        'HP',
+        28,
+        65,
+        13
+    );
+
+    X.fillStyle='#281a24';
+
+    X.fillRect(
+        55,
+        53,
+        150,
+        14
+    );
+
+    X.fillStyle='#df5968';
+
+    X.fillRect(
+        55,
+        53,
+        150*player.hp/player.maxHp,
+        14
+    );
+
+    text(
+        `${player.hp}/${player.maxHp}`,
+        213,
+        65,
+        12,
+        '#fff',
+        'right'
+    );
+
+    text(
+        `Tränke ${player.potions}   Schlüssel ${player.keys}   Münzen ${player.coins}`,
+        28,
+        88,
+        12,
+        '#d5dbea'
+    );
+
+    panel(
+        W-335,
+        16,
+        319,
+        62
+    );
+
+    text(
+        'ZIEL',
+        W-320,
+        38,
+        12,
+        '#90a9d4'
+    );
+
+    const q=
+        state.quest?.status==='done'
+        ?'Die drei Echos sind befreit.'
+        :state.bosses.thorn
+        ?'Besiege die verbleibenden Echo Wächter.'
+        :'Finde das Echo im Whispering Forest.';
+
+    text(
+        q,
+        W-320,
+        61,
+        14,
+        '#eee'
+    );
+}
+
+function drawDialog(){
+
+    if(!state.dialog)return;
+
+    panel(
+        70,
+        H-185,
+        W-140,
+        145,
+        .96
+    );
+
+    text(
+        state.dialog.npc,
+        95,
+        H-150,
+        20,
+        '#ffd166'
+    );
+
+    wrap(
+        state.dialog.lines[
+            state.dialog.line
+        ],
+        95,
+        H-116,
+        W-190,
+        24
+    );
+
+    text(
+        'E ... weiter',
+        W-190,
+        H-62,
+        13,
+        '#9fb0ce'
+    );
+}
+
+
+/* MENUS */
+
+function drawMenu(
+    title,
+    sub
+){
+
+    X.fillStyle='#070a10';
+
+    X.fillRect(
+        0,
+        0,
+        W,
+        H
+    );
+
+    const g=
+        X.createLinearGradient(
+            0,
+            0,
+            W,
+            H
+        );
+
+    g.addColorStop(
+        0,
+        '#111d35'
+    );
+
+    g.addColorStop(
+        1,
+        '#1b1025'
+    );
+
+    X.fillStyle=g;
+
+    X.fillRect(
+        0,
+        0,
+        W,
+        H
+    );
+
+    for(let i=0;i<90;i++){
+
+        const x=
+            rng(i*4+1)*W;
+
+        const y=
+            rng(i*4+2)*H;
+
+        const s=
+            rng(i*4+3)*2+1;
+
+        X.fillStyle=
+            'rgba(180,210,255,.5)';
+
+        X.fillRect(
+            x,
+            y,
+            s,
+            s
+        );
+    }
+
+    text(
+        title,
+        W/2,
+        170,
+        56,
+        '#edf5ff',
+        'center'
+    );
+
+    text(
+        sub,
+        W/2,
+        205,
+        16,
+        '#91a6c9',
+        'center'
+    );
+}
+
+function drawTitle(){
+
+    drawMenu(
+        'ECHOES OF ASTERRA',
+        'Ein kleines Action Adventure ... vollständig in dieser Datei'
+    );
+
+    button(
+        'NEUES SPIEL',
+        W/2-120,
+        285,
+        240,
+        50
+    );
+
+    button(
+        'SPIEL LADEN',
+        W/2-120,
+        350,
+        240,
+        50
+    );
+
+    button(
+        'STEUERUNG',
+        W/2-120,
+        415,
+        240,
+        50
+    );
+
+    text(
+        'WASD / Pfeile  Bewegung     J Angriff     K Ausweichen     E Interaktion     I Inventar     ESC Pause',
+        W/2,
+        535,
+        14,
+        '#aebbd1',
+        'center'
+    );
+
+    text(
+        'H ... Trank     F5 ... Speichern',
+        W/2,
+        562,
+        13,
+        '#7889a8',
+        'center'
+    );
+}
+
+function button(
+    label,
+    x,
+    y,
+    w,
+    h
+){
+
+    panel(
+        x,
+        y,
+        w,
+        h,
+        .75
+    );
+
+    text(
+        label,
+        x+w/2,
+        y+31,
+        17,
+        '#eef',
+        'center'
+    );
+}
+
+function drawPause(){
+
+    drawMenu(
+        'PAUSE',
+        'Das Abenteuer wartet'
+    );
+
+    button(
+        'FORTSETZEN',
+        W/2-120,
+        270,
+        240,
+        48
+    );
+
+    button(
+        'SPEICHERN',
+        W/2-120,
+        330,
+        240,
+        48
+    );
+
+    button(
+        'TITELBILDSCHIRM',
+        W/2-120,
+        390,
+        240,
+        48
+    );
+
+    text(
+        'ESC ... zurück',
+        W/2,
+        485,
+        14,
+        '#9fb0ce',
+        'center'
+    );
+}
+
+function drawInventory(){
+
+    drawMenu(
+        'INVENTAR',
+        'Deine Ausrüstung'
+    );
+
+    panel(
+        270,
+        230,
+        740,
+        300,
+        .94
+    );
+
+    text(
+        `Heiltränke: ${player.potions}`,
+        310,
+        275,
+        22
+    );
+
+    text(
+        `Schlüssel: ${player.keys}`,
+        310,
+        320,
+        22
+    );
+
+    text(
+        `Münzen: ${player.coins}`,
+        310,
+        365,
+        22
+    );
+
+    text(
+        `Schild: ${player.shield?'ausgerüstet':'nicht gefunden'}`,
+        650,
+        275,
+        22
+    );
+
+    text(
+        `Waffe: ${player.damage>=2?'Asterra Klinge':'Holzklinge'}`,
+        650,
+        320,
+        22
+    );
+
+    text(
+        'H ... Trank     I / ESC ... zurück',
+        W/2,
+        470,
+        15,
+        '#aebbd1',
+        'center'
+    );
+}
+
+function drawEnd(win){
+
+    drawMenu(
+        win
+        ?'DAS LICHT KEHRT ZURÜCK'
+        :'GAME OVER',
+
+        win
+        ?'Die drei Echos sind befreit. Asterra hört wieder die Sterne.'
+        :'Das Echo der Welt verstummt ...'
+    );
+
+    button(
+        win
+        ?'NEUES SPIEL'
+        :'NOCH EINMAL',
+        W/2-120,
+        330,
+        240,
+        52
+    );
+
+    if(!win){
+
+        text(
+            'Der letzte Speicherstand bleibt erhalten.',
+            W/2,
+            420,
+            14,
+            '#9fb0ce',
+            'center'
+        );
+    }
+}
+
+
+/* RENDER */
+
+function render(){
+
+    X.save();
+
+    const sx=
+        state.shake
+        ?(rnd()-.5)*state.shake
+        :0;
+
+    const sy=
+        state.shake
+        ?(rnd()-.5)*state.shake
+        :0;
+
+    X.translate(
+        sx,
+        sy
+    );
+
+    if(state.mode==='title'){
+
+        drawTitle();
+
+        X.restore();
+
+        return;
+    }
+
+    if(state.mode==='pause'){
+
+        drawPause();
+
+        X.restore();
+
+        return;
+    }
+
+    if(state.mode==='inventory'){
+
+        drawInventory();
+
+        X.restore();
+
+        return;
+    }
+
+    if(state.mode==='gameover'){
+
+        drawEnd(false);
+
+        X.restore();
+
+        return;
+    }
+
+    if(state.mode==='win'){
+
+        drawEnd(true);
+
+        X.restore();
+
+        return;
+    }
+
+    X.fillStyle='#10151e';
+
+    X.fillRect(
+        0,
+        0,
+        W,
+        H
+    );
+
+    drawWorld();
+    drawEntities();
+    drawEffects();
+    drawHUD();
+    drawDialog();
+
+    if(state.flash>0){
+
+        X.fillStyle=
+            `rgba(255,70,70,${state.flash*2})`;
+
+        X.fillRect(
+            0,
+            0,
+            W,
+            H
+        );
+    }
+
+    X.restore();
+}
+
+
+/* MENU LOGIC */
+
+function handleMenus(){
+
+    if(state.mode==='title'){
+
+        if(hit('n')){
+            resetGame();
+        }
+
+        if(hit('l')){
+
+            if(!loadGame()){
+                resetGame();
+            }
+        }
+
+        if(hit('c')){
+            state.mode='controls';
+        }
+    }
+
+    else if(state.mode==='controls'){
+
+        if(
+            hit('escape')||
+            hit('c')
+        ){
+            state.mode='title';
+        }
+    }
+
+    else if(state.mode==='pause'){
+
+        if(hit('escape')){
+            state.mode='play';
+        }
+
+        if(hit('s')){
+            saveGame();
+        }
+
+        if(hit('q')){
+            state.mode='title';
+        }
+    }
+
+    else if(state.mode==='inventory'){
+
+        if(
+            hit('i')||
+            hit('escape')
+        ){
+            state.mode='play';
+        }
+    }
+
+    else if(
+        state.mode==='gameover'||
+        state.mode==='win'
+    ){
+
+        if(
+            hit('enter')||
+            hit('n')
+        ){
+            resetGame();
+        }
+    }
+
+    if(
+        state.dialog &&
+        hit('e')
+    ){
+        advanceDialog();
+    }
+}
+
+
+/* POINTER SUPPORT */
+
+C.addEventListener(
+    'click',
+    e=>{
+
+        const r=
+            C.getBoundingClientRect();
+
+        const x=
+            (e.clientX-r.left)*
+            W/r.width;
+
+        const y=
+            (e.clientY-r.top)*
+            H/r.height;
+
+        if(state.mode==='title'){
+
+            if(
+                y>280 &&
+                y<345
+            ){
+
+                resetGame();
+
+            }
+
+            else if(
+                y>345 &&
+                y<410
+            ){
+
+                if(!loadGame()){
+                    return;
+                }
+
+            }
+
+            else if(
+                y>410 &&
+                y<475
+            ){
+
+                state.mode='controls';
+            }
+        }
+
+        else if(state.mode==='pause'){
+
+            if(
+                y>260 &&
+                y<330
+            ){
+
+                state.mode='play';
+
+            }
+
+            else if(
+                y>330 &&
+                y<390
+            ){
+
+                saveGame();
+
+            }
+
+            else if(
+                y>390 &&
+                y<455
+            ){
+
+                state.mode='title';
+            }
+        }
+
+        else if(state.mode==='inventory'){
+
+            if(y>440){
+                state.mode='play';
+            }
+        }
+
+        else if(
+            state.mode==='gameover'||
+            state.mode==='win'
+        ){
+
+            if(
+                y>320 &&
+                y<410
+            ){
+
+                resetGame();
+            }
+        }
+    }
+);
+
+
+/* CONTROLS */
+
+const baseRender=render;
+
+function render2(){
+
+    if(state.mode==='controls'){
+
+        drawMenu(
+            'STEUERUNG',
+            ''
+        );
+
+        panel(
+            260,
+            235,
+            760,
+            300,
+            .94
+        );
+
+        text(
+            'WASD / Pfeile ... Bewegung',
+            300,
+            280,
+            20
+        );
+
+        text(
+            'Shift ... Sprint',
+            300,
+            320,
+            20
+        );
+
+        text(
+            'J ... Nahkampfangriff',
+            300,
+            360,
+            20
+        );
+
+        text(
+            'K ... Ausweichen',
+            300,
+            400,
+            20
+        );
+
+        text(
+            'E ... NPCs / Gegenstände',
+            680,
+            280,
+            20
+        );
+
+        text(
+            'I ... Inventar',
+            680,
+            320,
+            20
+        );
+
+        text(
+            'H ... Heiltrank',
+            680,
+            360,
+            20
+        );
+
+        text(
+            'ESC ... Pause',
+            680,
+            400,
+            20
+        );
+
+        text(
+            'C oder ESC ... zurück',
+            W/2,
+            475,
+            15,
+            '#aebbd1',
+            'center'
+        );
+
+        return;
+    }
+
+    baseRender();
+}
+
+render=render2;
+
+
+/* GAME LOOP */
+
+let last=performance.now();
+
+function loop(now){
+
+    const dt=
+        Math.min(
+            .033,
+            (now-last)/1000
+        );
+
+    last=now;
+
+    handleMenus();
+    update(dt);
+    render();
+
+    pressed.clear();
+
+    requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+
+</script>
+
+</body>
+</html>
